@@ -55,7 +55,6 @@ package leaderelection
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -99,9 +98,14 @@ func NewLeaderElector(lec LeaderElectionConfig) (*LeaderElector, error) {
 	if lec.Lock == nil {
 		return nil, fmt.Errorf("Lock must not be nil.")
 	}
+	if _, isSafeLock := lec.Lock.(*rl.SafeLock); !isSafeLock {
+		lec.Lock = &rl.SafeLock{Base: lec.Lock}
+	}
 	le := LeaderElector{
-		config:  lec,
-		clock:   clock.RealClock{},
+		config: lec,
+		state: leaderElectorState{
+			clock: clock.RealClock{},
+		},
 		metrics: globalMetricsFactory.newLeaderMetrics(),
 	}
 	le.metrics.leaderOff(le.config.Name)
@@ -175,16 +179,13 @@ type LeaderCallbacks struct {
 // LeaderElector is a leader election client.
 type LeaderElector struct {
 	config LeaderElectionConfig
-	// internal bookkeeping
-	observedRecord rl.LeaderElectionRecord
-	observedTime   time.Time
+	// internal state, it's kept in a different structure to handle concurrent
+	// access.
+	state leaderElectorState
 	// used to implement OnNewLeader(), may lag slightly from the
 	// value observedRecord.HolderIdentity if the transition has
 	// not yet been reported.
 	reportedLeader string
-
-	// clock is wrapper around time to allow for less flaky testing
-	clock clock.Clock
 
 	metrics leaderMetricsAdapter
 
@@ -223,12 +224,12 @@ func RunOrDie(ctx context.Context, lec LeaderElectionConfig) {
 // GetLeader returns the identity of the last observed leader or returns the empty string if
 // no leader has yet been observed.
 func (le *LeaderElector) GetLeader() string {
-	return le.observedRecord.HolderIdentity
+	return le.state.currentRecord().HolderIdentity
 }
 
 // IsLeader returns true if the last observed leader was this client else returns false.
 func (le *LeaderElector) IsLeader() bool {
-	return le.observedRecord.HolderIdentity == le.config.Lock.Identity()
+	return le.GetLeader() == le.config.Lock.Identity()
 }
 
 // acquire loops calling tryAcquireOrRenew and returns true immediately when tryAcquireOrRenew succeeds.
@@ -300,14 +301,13 @@ func (le *LeaderElector) release() bool {
 		return true
 	}
 	leaderElectionRecord := rl.LeaderElectionRecord{
-		LeaderTransitions: le.observedRecord.LeaderTransitions,
+		LeaderTransitions: le.state.currentRecord().LeaderTransitions,
 	}
 	if err := le.config.Lock.Update(leaderElectionRecord); err != nil {
 		klog.Errorf("Failed to release lock: %v", err)
 		return false
 	}
-	le.observedRecord = leaderElectionRecord
-	le.observedTime = le.clock.Now()
+	le.state.updateRecord(leaderElectionRecord)
 	return true
 }
 
@@ -334,18 +334,15 @@ func (le *LeaderElector) tryAcquireOrRenew() bool {
 			klog.Errorf("error initially creating leader election record: %v", err)
 			return false
 		}
-		le.observedRecord = leaderElectionRecord
-		le.observedTime = le.clock.Now()
+		le.state.updateRecord(leaderElectionRecord)
 		return true
 	}
 
 	// 2. Record obtained, check the Identity & Time
-	if !reflect.DeepEqual(le.observedRecord, *oldLeaderElectionRecord) {
-		le.observedRecord = *oldLeaderElectionRecord
-		le.observedTime = le.clock.Now()
-	}
+	le.state.updateRecordIfDifferent(*oldLeaderElectionRecord)
+
 	if len(oldLeaderElectionRecord.HolderIdentity) > 0 &&
-		le.observedTime.Add(le.config.LeaseDuration).After(now.Time) &&
+		le.state.currentTime().Add(le.config.LeaseDuration).After(now.Time) &&
 		!le.IsLeader() {
 		klog.V(4).Infof("lock is held by %v and has not yet expired", oldLeaderElectionRecord.HolderIdentity)
 		return false
@@ -365,16 +362,15 @@ func (le *LeaderElector) tryAcquireOrRenew() bool {
 		klog.Errorf("Failed to update lock: %v", err)
 		return false
 	}
-	le.observedRecord = leaderElectionRecord
-	le.observedTime = le.clock.Now()
+	le.state.updateRecord(leaderElectionRecord)
 	return true
 }
 
 func (le *LeaderElector) maybeReportTransition() {
-	if le.observedRecord.HolderIdentity == le.reportedLeader {
+	if le.state.currentRecord().HolderIdentity == le.reportedLeader {
 		return
 	}
-	le.reportedLeader = le.observedRecord.HolderIdentity
+	le.reportedLeader = le.state.currentRecord().HolderIdentity
 	if le.config.Callbacks.OnNewLeader != nil {
 		go le.config.Callbacks.OnNewLeader(le.reportedLeader)
 	}
@@ -389,7 +385,8 @@ func (le *LeaderElector) Check(maxTolerableExpiredLease time.Duration) error {
 	// If we are more than timeout seconds after the lease duration that is past the timeout
 	// on the lease renew. Time to start reporting ourselves as unhealthy. We should have
 	// died but conditions like deadlock can prevent this. (See #70819)
-	if le.clock.Since(le.observedTime) > le.config.LeaseDuration+maxTolerableExpiredLease {
+
+	if le.state.elapsedTime() > le.config.LeaseDuration+maxTolerableExpiredLease {
 		return fmt.Errorf("failed election to renew leadership on lease %s", le.config.Name)
 	}
 

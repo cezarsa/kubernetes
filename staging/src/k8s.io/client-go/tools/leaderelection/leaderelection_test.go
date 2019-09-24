@@ -283,28 +283,29 @@ func testTryAcquireOrRenew(t *testing.T, objectType string) {
 				},
 			}
 			le := &LeaderElector{
-				config:         lec,
-				observedRecord: test.observedRecord,
-				observedTime:   test.observedTime,
-				clock:          clock.RealClock{},
+				config: lec,
+				state: leaderElectorState{
+					observedRecord: test.observedRecord,
+					observedTime:   test.observedTime,
+					clock:          clock.RealClock{},
+				},
 			}
 
 			if test.expectSuccess != le.tryAcquireOrRenew() {
 				t.Errorf("unexpected result of tryAcquireOrRenew: [succeeded=%v]", !test.expectSuccess)
 			}
 
-			le.observedRecord.AcquireTime = metav1.Time{}
-			le.observedRecord.RenewTime = metav1.Time{}
-			if le.observedRecord.HolderIdentity != test.outHolder {
-				t.Errorf("expected holder:\n\t%+v\ngot:\n\t%+v", test.outHolder, le.observedRecord.HolderIdentity)
+			record := le.state.currentRecord()
+			if record.HolderIdentity != test.outHolder {
+				t.Errorf("expected holder:\n\t%+v\ngot:\n\t%+v", test.outHolder, record.HolderIdentity)
 			}
 			if len(test.reactors) != len(c.Actions()) {
 				t.Errorf("wrong number of api interactions")
 			}
-			if test.transitionLeader && le.observedRecord.LeaderTransitions != 1 {
+			if test.transitionLeader && record.LeaderTransitions != 1 {
 				t.Errorf("leader should have transitioned but did not")
 			}
-			if !test.transitionLeader && le.observedRecord.LeaderTransitions != 0 {
+			if !test.transitionLeader && record.LeaderTransitions != 0 {
 				t.Errorf("leader should not have transitioned but did")
 			}
 

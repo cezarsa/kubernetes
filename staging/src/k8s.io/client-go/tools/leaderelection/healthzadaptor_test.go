@@ -18,12 +18,12 @@ package leaderelection
 
 import (
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
 	"k8s.io/apimachinery/pkg/util/clock"
 	rl "k8s.io/client-go/tools/leaderelection/resourcelock"
-	"net/http"
 )
 
 type fakeLock struct {
@@ -85,11 +85,13 @@ func TestLeaderElectionHealthChecker(t *testing.T) {
 					LeaseDuration: time.Minute,
 					Name:          "foo",
 				},
-				observedRecord: rl.LeaderElectionRecord{
-					HolderIdentity: "healthTest",
+				state: leaderElectorState{
+					observedRecord: rl.LeaderElectionRecord{
+						HolderIdentity: "healthTest",
+					},
+					observedTime: current,
+					clock:        clock.NewFakeClock(current.Add(time.Hour)),
 				},
-				observedTime: current,
-				clock:        clock.NewFakeClock(current.Add(time.Hour)),
 			},
 		},
 		{
@@ -102,11 +104,13 @@ func TestLeaderElectionHealthChecker(t *testing.T) {
 					LeaseDuration: time.Minute,
 					Name:          "foo",
 				},
-				observedRecord: rl.LeaderElectionRecord{
-					HolderIdentity: "otherServer",
+				state: leaderElectorState{
+					observedRecord: rl.LeaderElectionRecord{
+						HolderIdentity: "otherServer",
+					},
+					observedTime: current,
+					clock:        clock.NewFakeClock(current.Add(time.Hour)),
 				},
-				observedTime: current,
-				clock:        clock.NewFakeClock(current.Add(time.Hour)),
 			},
 		},
 		{
@@ -119,11 +123,13 @@ func TestLeaderElectionHealthChecker(t *testing.T) {
 					LeaseDuration: time.Minute,
 					Name:          "foo",
 				},
-				observedRecord: rl.LeaderElectionRecord{
-					HolderIdentity: "healthTest",
+				state: leaderElectorState{
+					observedRecord: rl.LeaderElectionRecord{
+						HolderIdentity: "healthTest",
+					},
+					observedTime: current,
+					clock:        clock.NewFakeClock(current),
 				},
-				observedTime: current,
-				clock:        clock.NewFakeClock(current),
 			},
 		},
 		{
@@ -136,11 +142,13 @@ func TestLeaderElectionHealthChecker(t *testing.T) {
 					LeaseDuration: time.Minute,
 					Name:          "foo",
 				},
-				observedRecord: rl.LeaderElectionRecord{
-					HolderIdentity: "healthTest",
+				state: leaderElectorState{
+					observedRecord: rl.LeaderElectionRecord{
+						HolderIdentity: "healthTest",
+					},
+					observedTime: current,
+					clock:        clock.NewFakeClock(current.Add(time.Minute).Add(time.Second)),
 				},
-				observedTime: current,
-				clock:        clock.NewFakeClock(current.Add(time.Minute).Add(time.Second)),
 			},
 		},
 	}

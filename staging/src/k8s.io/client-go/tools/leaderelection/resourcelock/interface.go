@@ -92,35 +92,37 @@ type Interface interface {
 
 // Manufacture will create a lock of a given type according to the input parameters
 func New(lockType string, ns string, name string, coreClient corev1.CoreV1Interface, coordinationClient coordinationv1.CoordinationV1Interface, rlc ResourceLockConfig) (Interface, error) {
+	var lock Interface
 	switch lockType {
 	case EndpointsResourceLock:
-		return &EndpointsLock{
+		lock = &EndpointsLock{
 			EndpointsMeta: metav1.ObjectMeta{
 				Namespace: ns,
 				Name:      name,
 			},
 			Client:     coreClient,
 			LockConfig: rlc,
-		}, nil
+		}
 	case ConfigMapsResourceLock:
-		return &ConfigMapLock{
+		lock = &ConfigMapLock{
 			ConfigMapMeta: metav1.ObjectMeta{
 				Namespace: ns,
 				Name:      name,
 			},
 			Client:     coreClient,
 			LockConfig: rlc,
-		}, nil
+		}
 	case LeasesResourceLock:
-		return &LeaseLock{
+		lock = &LeaseLock{
 			LeaseMeta: metav1.ObjectMeta{
 				Namespace: ns,
 				Name:      name,
 			},
 			Client:     coordinationClient,
 			LockConfig: rlc,
-		}, nil
+		}
 	default:
 		return nil, fmt.Errorf("Invalid lock-type %s", lockType)
 	}
+	return &SafeLock{Base: lock}, nil
 }
