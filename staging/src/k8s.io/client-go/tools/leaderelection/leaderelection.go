@@ -312,8 +312,10 @@ func (le *LeaderElector) release() bool {
 		klog.Errorf("Failed to release lock: %v", err)
 		return false
 	}
+	le.mu.Lock()
 	le.observedRecord = leaderElectionRecord
 	le.observedTime = le.clock.Now()
+	le.mu.Unlock()
 	return true
 }
 
