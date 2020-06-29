@@ -24,7 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -47,11 +47,16 @@ import (
 const testHostname = "test-hostname"
 
 type fakeIPGetter struct {
-	nodeIPs []net.IP
+	nodeIPs   []net.IP
+	bindedIPs sets.String
 }
 
 func (f *fakeIPGetter) NodeIPs() ([]net.IP, error) {
 	return f.nodeIPs, nil
+}
+
+func (f *fakeIPGetter) BindedIPs() (sets.String, error) {
+	return f.bindedIPs, nil
 }
 
 type fakeHealthChecker struct {
@@ -2573,6 +2578,7 @@ func Test_syncService(t *testing.T) {
 		svcName          string
 		newVirtualServer *utilipvs.VirtualServer
 		bindAddr         bool
+		bindedAddrs      sets.String
 	}{
 		{
 			// case 0, old virtual server is same as new virtual server
@@ -2591,7 +2597,8 @@ func Test_syncService(t *testing.T) {
 				Scheduler: "rr",
 				Flags:     utilipvs.FlagHashed,
 			},
-			bindAddr: false,
+			bindAddr:    false,
+			bindedAddrs: sets.NewString(),
 		},
 		{
 			// case 1, old virtual server is different from new virtual server
@@ -2610,7 +2617,8 @@ func Test_syncService(t *testing.T) {
 				Scheduler: "rr",
 				Flags:     utilipvs.FlagPersistent,
 			},
-			bindAddr: false,
+			bindAddr:    false,
+			bindedAddrs: sets.NewString(),
 		},
 		{
 			// case 2, old virtual server is different from new virtual server
@@ -2629,7 +2637,8 @@ func Test_syncService(t *testing.T) {
 				Scheduler: "wlc",
 				Flags:     utilipvs.FlagHashed,
 			},
-			bindAddr: false,
+			bindAddr:    false,
+			bindedAddrs: sets.NewString(),
 		},
 		{
 			// case 3, old virtual server is nil, and create new virtual server
@@ -2642,7 +2651,8 @@ func Test_syncService(t *testing.T) {
 				Scheduler: "rr",
 				Flags:     utilipvs.FlagHashed,
 			},
-			bindAddr: true,
+			bindAddr:    true,
+			bindedAddrs: sets.NewString(),
 		},
 		{
 			// case 4, SCTP, old virtual server is same as new virtual server
@@ -2661,7 +2671,8 @@ func Test_syncService(t *testing.T) {
 				Scheduler: "rr",
 				Flags:     utilipvs.FlagHashed,
 			},
-			bindAddr: false,
+			bindAddr:    false,
+			bindedAddrs: sets.NewString(),
 		},
 		{
 			// case 5, old virtual server is different from new virtual server
@@ -2680,7 +2691,8 @@ func Test_syncService(t *testing.T) {
 				Scheduler: "rr",
 				Flags:     utilipvs.FlagPersistent,
 			},
-			bindAddr: false,
+			bindAddr:    false,
+			bindedAddrs: sets.NewString(),
 		},
 		{
 			// case 6, old virtual server is different from new virtual server
@@ -2699,7 +2711,8 @@ func Test_syncService(t *testing.T) {
 				Scheduler: "wlc",
 				Flags:     utilipvs.FlagHashed,
 			},
-			bindAddr: false,
+			bindAddr:    false,
+			bindedAddrs: sets.NewString(),
 		},
 		{
 			// case 7, old virtual server is nil, and create new virtual server
@@ -2712,7 +2725,28 @@ func Test_syncService(t *testing.T) {
 				Scheduler: "rr",
 				Flags:     utilipvs.FlagHashed,
 			},
-			bindAddr: true,
+			bindAddr:    true,
+			bindedAddrs: sets.NewString(),
+		},
+		{
+			// case 8, virtual server address already binded, skip sync
+			oldVirtualServer: &utilipvs.VirtualServer{
+				Address:   net.ParseIP("1.2.3.4"),
+				Protocol:  string(v1.ProtocolSCTP),
+				Port:      53,
+				Scheduler: "rr",
+				Flags:     utilipvs.FlagHashed,
+			},
+			svcName: "baz",
+			newVirtualServer: &utilipvs.VirtualServer{
+				Address:   net.ParseIP("1.2.3.4"),
+				Protocol:  string(v1.ProtocolSCTP),
+				Port:      53,
+				Scheduler: "rr",
+				Flags:     utilipvs.FlagHashed,
+			},
+			bindAddr:    true,
+			bindedAddrs: sets.NewString("1.2.3.4"),
 		},
 	}
 
@@ -2728,7 +2762,7 @@ func Test_syncService(t *testing.T) {
 				t.Errorf("Case [%d], unexpected add IPVS virtual server error: %v", i, err)
 			}
 		}
-		if err := proxier.syncService(testCases[i].svcName, testCases[i].newVirtualServer, testCases[i].bindAddr); err != nil {
+		if err := proxier.syncService(testCases[i].svcName, testCases[i].newVirtualServer, testCases[i].bindAddr, testCases[i].bindedAddrs); err != nil {
 			t.Errorf("Case [%d], unexpected sync IPVS virtual server error: %v", i, err)
 		}
 		// check
