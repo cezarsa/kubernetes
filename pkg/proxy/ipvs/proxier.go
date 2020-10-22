@@ -799,6 +799,15 @@ func (proxier *Proxier) syncProxyRules() {
 	// activeBindAddrs represents ip address successfully bind to DefaultDummyDevice in this round of sync
 	activeBindAddrs := map[string]bool{}
 
+	appliedSvcs, err := proxier.ipvs.GetVirtualServers()
+	if err == nil {
+		for _, appliedSvc := range appliedSvcs {
+			currentIPVSServices[appliedSvc.String()] = appliedSvc
+		}
+	} else {
+		klog.Errorf("Failed to get ipvs services, err: %v", err)
+	}
+
 	bindedAddresses, err := proxier.ipGetter.BindedIPs()
 	if err != nil {
 		klog.Errorf("error listing addresses binded to dummy interface, error: %v", err)
@@ -912,12 +921,12 @@ func (proxier *Proxier) syncProxyRules() {
 			serv.Timeout = uint32(svcInfo.StickyMaxAgeSeconds)
 		}
 		// We need to bind ClusterIP to dummy interface, so set `bindAddr` parameter to `true` in syncService()
-		if err := proxier.syncService(svcNameString, serv, true, bindedAddresses); err == nil {
+		if err := proxier.syncService(svcNameString, serv, true, bindedAddresses, currentIPVSServices); err == nil {
 			activeIPVSServices[serv.String()] = true
 			activeBindAddrs[serv.Address.String()] = true
 			// ExternalTrafficPolicy only works for NodePort and external LB traffic, does not affect ClusterIP
 			// So we still need clusterIP rules in onlyNodeLocalEndpoints mode.
-			if err := proxier.syncEndpoint(svcName, false, serv); err != nil {
+			if err := proxier.syncEndpoint(svcName, false, serv, currentIPVSServices); err != nil {
 				klog.Errorf("Failed to sync endpoint for service: %v, err: %v", serv, err)
 			}
 		} else {
@@ -984,10 +993,10 @@ func (proxier *Proxier) syncProxyRules() {
 				serv.Flags |= utilipvs.FlagPersistent
 				serv.Timeout = uint32(svcInfo.StickyMaxAgeSeconds)
 			}
-			if err := proxier.syncService(svcNameString, serv, true, bindedAddresses); err == nil {
+			if err := proxier.syncService(svcNameString, serv, true, bindedAddresses, currentIPVSServices); err == nil {
 				activeIPVSServices[serv.String()] = true
 				activeBindAddrs[serv.Address.String()] = true
-				if err := proxier.syncEndpoint(svcName, false, serv); err != nil {
+				if err := proxier.syncEndpoint(svcName, false, serv, currentIPVSServices); err != nil {
 					klog.Errorf("Failed to sync endpoint for service: %v, err: %v", serv, err)
 				}
 			} else {
@@ -1085,10 +1094,10 @@ func (proxier *Proxier) syncProxyRules() {
 					serv.Flags |= utilipvs.FlagPersistent
 					serv.Timeout = uint32(svcInfo.StickyMaxAgeSeconds)
 				}
-				if err := proxier.syncService(svcNameString, serv, true, bindedAddresses); err == nil {
+				if err := proxier.syncService(svcNameString, serv, true, bindedAddresses, currentIPVSServices); err == nil {
 					activeIPVSServices[serv.String()] = true
 					activeBindAddrs[serv.Address.String()] = true
-					if err := proxier.syncEndpoint(svcName, svcInfo.OnlyNodeLocalEndpoints, serv); err != nil {
+					if err := proxier.syncEndpoint(svcName, svcInfo.OnlyNodeLocalEndpoints, serv, currentIPVSServices); err != nil {
 						klog.Errorf("Failed to sync endpoint for service: %v, err: %v", serv, err)
 					}
 				} else {
@@ -1208,9 +1217,9 @@ func (proxier *Proxier) syncProxyRules() {
 					serv.Timeout = uint32(svcInfo.StickyMaxAgeSeconds)
 				}
 				// There is no need to bind Node IP to dummy interface, so set parameter `bindAddr` to `false`.
-				if err := proxier.syncService(svcNameString, serv, false, bindedAddresses); err == nil {
+				if err := proxier.syncService(svcNameString, serv, false, bindedAddresses, currentIPVSServices); err == nil {
 					activeIPVSServices[serv.String()] = true
-					if err := proxier.syncEndpoint(svcName, svcInfo.OnlyNodeLocalEndpoints, serv); err != nil {
+					if err := proxier.syncEndpoint(svcName, svcInfo.OnlyNodeLocalEndpoints, serv, currentIPVSServices); err != nil {
 						klog.Errorf("Failed to sync endpoint for service: %v, err: %v", serv, err)
 					}
 				} else {
@@ -1268,14 +1277,6 @@ func (proxier *Proxier) syncProxyRules() {
 	legacyBindAddrs := proxier.getLegacyBindAddr(activeBindAddrs, currentBindAddrs)
 
 	// Clean up legacy IPVS services and unbind addresses
-	appliedSvcs, err := proxier.ipvs.GetVirtualServers()
-	if err == nil {
-		for _, appliedSvc := range appliedSvcs {
-			currentIPVSServices[appliedSvc.String()] = appliedSvc
-		}
-	} else {
-		klog.Errorf("Failed to get ipvs service, err: %v", err)
-	}
 	proxier.cleanLegacyService(activeIPVSServices, currentIPVSServices, legacyBindAddrs)
 
 	// Update healthz timestamp
@@ -1561,8 +1562,8 @@ func (proxier *Proxier) deleteEndpointConnections(connectionMap []proxy.ServiceE
 	}
 }
 
-func (proxier *Proxier) syncService(svcName string, vs *utilipvs.VirtualServer, bindAddr bool, bindedAddresses sets.String) error {
-	appliedVirtualServer, _ := proxier.ipvs.GetVirtualServer(vs)
+func (proxier *Proxier) syncService(svcName string, vs *utilipvs.VirtualServer, bindAddr bool, bindedAddresses sets.String, currentIPVSServices map[string]*utilipvs.VirtualServer) error {
+	appliedVirtualServer, _ := proxier.getVirtualServer(currentIPVSServices, vs)
 	if appliedVirtualServer == nil || !appliedVirtualServer.Equal(vs) {
 		if appliedVirtualServer == nil {
 			// IPVS service is not found, create a new service
@@ -1580,6 +1581,7 @@ func (proxier *Proxier) syncService(svcName string, vs *utilipvs.VirtualServer, 
 				return err
 			}
 		}
+		currentIPVSServices[vs.String()] = vs
 	}
 
 	// bind service address to dummy interface
@@ -1601,8 +1603,8 @@ func (proxier *Proxier) syncService(svcName string, vs *utilipvs.VirtualServer, 
 	return nil
 }
 
-func (proxier *Proxier) syncEndpoint(svcPortName proxy.ServicePortName, onlyNodeLocalEndpoints bool, vs *utilipvs.VirtualServer) error {
-	appliedVirtualServer, err := proxier.ipvs.GetVirtualServer(vs)
+func (proxier *Proxier) syncEndpoint(svcPortName proxy.ServicePortName, onlyNodeLocalEndpoints bool, vs *utilipvs.VirtualServer, currentIPVSServices map[string]*utilipvs.VirtualServer) error {
+	appliedVirtualServer, err := proxier.getVirtualServer(currentIPVSServices, vs)
 	if err != nil || appliedVirtualServer == nil {
 		klog.Errorf("Failed to get IPVS service, error: %v", err)
 		return err
@@ -1698,6 +1700,18 @@ func (proxier *Proxier) syncEndpoint(svcPortName proxy.ServicePortName, onlyNode
 		}
 	}
 	return nil
+}
+
+func (proxier *Proxier) getVirtualServer(currentIPVSServices map[string]*utilipvs.VirtualServer, vs *utilipvs.VirtualServer) (*utilipvs.VirtualServer, error) {
+	appliedVirtualServer, ok := currentIPVSServices[vs.String()]
+	if ok {
+		return appliedVirtualServer, nil
+	}
+	appliedVirtualServer, err := proxier.ipvs.GetVirtualServer(vs)
+	if err == nil {
+		currentIPVSServices[appliedVirtualServer.String()] = appliedVirtualServer
+	}
+	return appliedVirtualServer, err
 }
 
 func (proxier *Proxier) cleanLegacyService(activeServices map[string]bool, currentServices map[string]*utilipvs.VirtualServer, legacyBindAddrs map[string]bool) {
